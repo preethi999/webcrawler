@@ -1,0 +1,184 @@
+Product URL Crawler Documentation
+Overview
+This web crawler is designed to discover and extract product URLs from e-commerce websites. It handles various URL patterns, manages concurrent requests, and ensures efficient and scalable crawling of large domains. The output is structured by domain, where each domain maps to a list of unique product URLs.
+
+Key Features:
+Handles multiple URL patterns (/product/, /item/, /p/, etc.) for detecting product pages.
+Uses asynchronous and parallel processing to speed up the crawling process.
+Ensures URLs are unique and correctly mapped to their respective domains.
+Can crawl deeply nested websites by recursively following internal links.
+Limits concurrent requests to prevent overwhelming the server.
+Module Breakdown
+1. Dependencies
+bash
+Copy code
+npm install axios cheerio p-limit
+axios: Used for making HTTP requests to fetch HTML content from pages.
+cheerio: A jQuery-like library for parsing HTML and extracting elements (used for extracting product links).
+p-limit: Manages concurrency, limiting the number of parallel requests made to the server at any given time.
+2. URL Patterns
+To identify product pages, we define common URL patterns that match product URLs, such as /product/, /item/, /p/, etc. These are stored in the PRODUCT_PATTERNS array.
+
+javascript
+Copy code
+const PRODUCT_PATTERNS = [
+    /\/product\//,  // Matches "/product/"
+    /\/item\//,     // Matches "/item/"
+    /\/p\//,        // Matches "/p/"
+    /product-/,     // Matches patterns like "product-12345"
+    /item-/,        // Matches patterns like "item-12345"
+];
+3. Checking for Product URLs
+The isProductUrl() function checks if a URL matches any of the predefined product patterns.
+
+javascript
+Copy code
+async function isProductUrl(url) {
+    for (let pattern of PRODUCT_PATTERNS) {
+        if (pattern.test(url)) {
+            return true;  // URL matches a product pattern
+        }
+    }
+    return false;  // URL doesn't match any product pattern
+}
+This function iterates over the PRODUCT_PATTERNS array and returns true if any pattern matches the provided URL. Otherwise, it returns false.
+4. Fetching HTML Content
+The fetchPage() function makes an HTTP GET request to fetch the HTML content of a page.
+
+javascript
+Copy code
+async function fetchPage(url) {
+    try {
+        const response = await axios.get(url);
+        return response.data;  // Return the HTML content
+    } catch (error) {
+        console.error(`Error fetching page: ${url}`, error.message);
+        return null;  // Return null if the page can't be fetched
+    }
+}
+It uses axios to send a GET request and returns the page’s HTML content. If an error occurs (e.g., the page is not reachable), it logs the error and returns null.
+5. Extracting Product URLs
+The discoverProductUrls() function uses Cheerio to parse the HTML content and extract product URLs based on the patterns.
+
+javascript
+Copy code
+async function discoverProductUrls(htmlContent, baseUrl) {
+    const productUrls = [];
+    const $ = cheerio.load(htmlContent);
+
+    $('a').each((index, element) => {
+        const url = $(element).attr('href');
+        if (url && isProductUrl(url)) {
+            const absoluteUrl = new URL(url, baseUrl).href;
+            productUrls.push(absoluteUrl);  // Store the absolute product URL
+        }
+    });
+
+    return productUrls;
+}
+This function loads the HTML using Cheerio, finds all <a> tags with href attributes, and checks if the href matches any product URL pattern. It resolves relative URLs into absolute URLs using the baseUrl and adds them to the productUrls array.
+6. Crawling Pages Recursively
+The crawlPage() function is the core of the crawler. It recursively crawls pages, extracts product URLs, and follows internal links.
+
+javascript
+Copy code
+async function crawlPage(url, baseUrl, visitedUrls = new Set()) {
+    if (visitedUrls.has(url)) {
+        return [];  // Skip already visited URLs
+    }
+
+    visitedUrls.add(url);
+
+    const htmlContent = await fetchPage(url);
+    if (!htmlContent) return [];  // If the page couldn't be fetched, return an empty array
+
+    const productUrls = await discoverProductUrls(htmlContent, baseUrl);
+
+    const $ = cheerio.load(htmlContent);
+    const internalLinks = [];
+    $('a').each((index, element) => {
+        const link = $(element).attr('href');
+        if (link && link.startsWith('/') && !visitedUrls.has(link)) {
+            internalLinks.push(new URL(link, baseUrl).href);  // Resolve relative links
+        }
+    });
+
+    const nextUrls = await Promise.all(internalLinks.map(link => limit(() => crawlPage(link, baseUrl, visitedUrls))));
+
+    return [...productUrls, ...nextUrls.flat()];  // Combine product URLs and internal links
+}
+Core Logic:
+Avoids revisiting already crawled URLs by checking the visitedUrls set.
+Calls fetchPage() to retrieve the HTML content of the page.
+Uses discoverProductUrls() to extract product URLs from the page.
+Extracts internal links and recursively crawls them.
+Uses p-limit to limit concurrent requests and avoid overloading the server.
+7. Storing Product URLs by Domain
+The storeProductUrls() function stores product URLs in a structured format by domain.
+
+javascript
+Copy code
+function storeProductUrls(urls) {
+    const parsedUrl = new URL(urls[0]);
+    const domain = parsedUrl.hostname;  // Extract the domain from the URL
+
+    if (!domainProducts[domain]) {
+        domainProducts[domain] = new Set();  // Initialize the Set for this domain
+    }
+
+    urls.forEach(url => {
+        domainProducts[domain].add(url);  // Add URLs to the domain's Set
+    });
+}
+Key Operations:
+Extracts the domain from the first product URL using new URL(urls[0]).
+If the domain is not already in domainProducts, it initializes a new Set for that domain.
+Adds each product URL to the corresponding domain's Set to ensure uniqueness.
+8. Main Crawler Function
+The crawlWebsite() function is the entry point that starts the crawling process.
+
+javascript
+Copy code
+async function crawlWebsite(startUrl) {
+    const parsedUrl = new URL(startUrl);
+    const baseUrl = `${parsedUrl.protocol}//${parsedUrl.hostname}`;  // Get the base URL
+
+    const visitedUrls = new Set();  // Track visited URLs
+
+    const productUrls = await crawlPage(startUrl, baseUrl, visitedUrls);
+    storeProductUrls(productUrls);  // Store the product URLs
+
+    console.log('Discovered product URLs by domain:', domainProducts);  // Output the results
+}
+Main Workflow:
+Extracts the baseUrl from the startUrl.
+Calls crawlPage() to start crawling from the startUrl.
+Stores the discovered product URLs using storeProductUrls().
+Logs the final product URLs, grouped by domain.
+Final Output Format
+The crawler outputs a structured object where each domain maps to a unique list of product URLs:
+
+javascript
+Copy code
+{
+    "example.com": [
+        "https://example.com/product/12345",
+        "https://example.com/product/67890"
+    ],
+    "anotherdomain.com": [
+        "https://anotherdomain.com/item/23456"
+    ]
+}
+Domain as Key: Each domain is a key in the object.
+Unique Product URLs: The value is an array containing unique product URLs for that domain.
+Conclusion
+This crawler efficiently extracts product URLs from e-commerce websites, handles different URL patterns, and ensures that the URLs are unique per domain. By using concurrency and parallelism with p-limit, it can crawl large domains without overwhelming the server. The results are structured by domain, allowing easy access to product URLs for each site.
+
+Let me know if you need any further clarifications or improvements!
+
+
+
+
+
+
+
